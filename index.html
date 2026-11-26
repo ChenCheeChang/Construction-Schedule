@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>工期表甘特圖編輯器 — 頂級工程排程旗艦版</title>
+  <title>萬用施工進度工期表</title>
   <style>
     :root {
       --lux-obsidian: #0e141f;
@@ -1297,10 +1297,10 @@
 
       <div class="ribbon-group">
         <button id="btnAddBlank" class="win-btn win-btn-primary" type="button">＋ 新增工項</button>
-        <button id="btnOpenCatalog" class="win-btn" type="button">📂 16大工項庫</button>
+        <button id="btnOpenCatalog" class="win-btn" type="button">📂全部工項庫</button>
         <select id="presetSelect" class="win-select" aria-label="快速套用案件範本">
           <option value="">📋 套用範本...</option>
-          <option value="standard16">拆除＋16大工項＋清潔細清 (50天)</option>
+          <option value="standard16">完整裝修 (50天)</option>
           <option value="residential">住宅室內裝修精簡 (37天)</option>
           <option value="commercial">商空／辦公室裝修 (62天)</option>
           <option value="publicworks">公共工程／校園修繕 (77天)</option>
@@ -1373,7 +1373,7 @@
   <div id="catalogModal" class="modal-backdrop" role="dialog" aria-modal="true" aria-labelledby="catalogModalTitle">
     <div class="modal-box">
       <div class="modal-header">
-        <span id="catalogModalTitle">📂 台灣室內裝修工項庫（拆除＋16大工項＋清潔／細清）</span>
+        <span id="catalogModalTitle">📂 台灣室內裝修工項庫</span>
         <button class="icon-btn" id="btnCloseCatalog" type="button" aria-label="關閉">✕</button>
       </div>
       <div class="modal-body">
@@ -1381,7 +1381,7 @@
         <div class="catalog-grid" id="catalogGrid"></div>
       </div>
       <div class="modal-footer">
-        <button class="win-btn" id="btnAddAll16" type="button">一次加入全部 16 大工項</button>
+        <button class="win-btn" id="btnAddAll16" type="button">一次加入全部工項</button>
         <button class="win-btn win-btn-primary" id="btnDoneCatalog" type="button">完成</button>
       </div>
     </div>
@@ -1594,7 +1594,7 @@
         const startDate = this.sanitizeDateStr(s.startDate);
         const projectTitle = (typeof s.projectTitle === "string" && s.projectTitle.trim())
           ? s.projectTitle.trim().slice(0, 80)
-          : "室內裝修 16 大工項進度工期表";
+          : "室內裝修工項進度工期表";
         const showActual = Boolean(s.showActual);
 
         const items = [];
@@ -1734,7 +1734,7 @@
           isImportant: scheduleSlots[idx].isImportant
         }));
         return this.normalizeState({
-          projectTitle: "室內裝修工程進度工期表（拆除→16大工項→清潔／細清）",
+          projectTitle: "室內裝修工程進度工期表",
           startDate: sd,
           totalDays: 50,
           showActual: false,
@@ -2303,7 +2303,7 @@
         bodyHTML = `
           <tr>
             <td colspan="${td + 3}" class="empty-row-cell">
-              目前尚無工項，請點擊上方 <strong>「＋ 新增工項」</strong> 或 <strong>「📂 16大工項庫」</strong> 快速建立工期表。
+              目前尚無工項，請點擊上方 <strong>「＋ 新增工項」</strong> 或 <strong>「📂 全部工項庫」</strong> 快速建立工期表。
             </td>
           </tr>
         `;
@@ -2616,7 +2616,7 @@
           commitState(next, `已批次加入 ${added} 項工項`);
           showToast(`已補齊加入 ${added} 項工項`);
         } else {
-          showToast("全部 18 項工項（含拆除與清潔／細清）皆已在工期表中");
+          showToast("全部工項皆已在工期表中");
         }
         closeCat();
       });
