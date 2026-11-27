@@ -1248,15 +1248,53 @@
       .form-grid { grid-template-columns: 1fr; }
     }
 
+    @page {
+      size: A3 landscape;
+      margin: 3mm;
+    }
+
     @media print {
+      * {
+        -webkit-print-color-adjust: exact !important;
+        print-color-adjust: exact !important;
+      }
       .win-ribbon, .executive-strip, .win-statusbar, .order-controls, .row-actions, .titlebar-actions, .actual-toggle-row {
         display: none !important;
       }
-      html, body, .app-shell, .workspace, .grid-scroll-container {
-        height: auto !important;
+      html, body {
+        width: 414mm !important;
+        height: 291mm !important;
+        margin: 0 !important;
+        padding: 0 !important;
+        background: #ffffff !important;
         overflow: visible !important;
       }
+      .app-shell {
+        width: 100% !important;
+        height: 291mm !important;
+        display: flex !important;
+        flex-direction: column !important;
+      }
+      .win-titlebar {
+        min-height: 28px !important;
+        padding: 3px 8px !important;
+      }
+      .workspace, .grid-scroll-container {
+        flex: 1 1 auto !important;
+        height: 100% !important;
+        overflow: visible !important;
+      }
+      table.gantt-table {
+        width: 100% !important;
+        height: 100% !important;
+        min-width: 0 !important;
+        table-layout: fixed !important;
+      }
       .sticky-col-1, .sticky-col-2, .sticky-col-3, .sticky-col-span3, thead th, tfoot {
+        position: static !important;
+        box-shadow: none !important;
+      }
+      .gantt-header-sticky-text {
         position: static !important;
       }
     }
@@ -1289,7 +1327,7 @@
         <span class="ribbon-label">工期</span>
         <div class="days-stepper" title="調整總排程天數 (1~365天)">
           <button id="btnDaysMinus" type="button" aria-label="減少天數">−</button>
-          <input id="totalDaysInput" type="number" min="1" max="365" value="45" aria-label="總工期天數" />
+          <input id="totalDaysInput" type="number" min="1" max="365" value="50" aria-label="總工期天數" />
           <button id="btnDaysPlus" type="button" aria-label="增加天數">+</button>
         </div>
         <span class="ribbon-label">天</span>
@@ -1317,7 +1355,7 @@
       </div>
 
       <div class="ribbon-group">
-        <button id="btnExportCSV" class="win-btn" type="button" title="匯出可用 Excel 直接開啟的 CSV 工期表">📥 匯出Excel</button>
+        <button id="btnExportCSV" class="win-btn" type="button" title="匯出彩色 Excel (.xlsx)，內建自動公式與橫式 A3 滿版列印設定">📥 匯出Excel</button>
         <button id="btnSaveJSON" class="win-btn" type="button" title="將專案存成 JSON 檔案">💾 存檔</button>
         <button id="btnLoadJSON" class="win-btn" type="button" title="開啟已儲存的 JSON 專案">📁 開啟</button>
         <input id="fileImportInput" type="file" accept=".json" style="display:none" />
@@ -1474,7 +1512,7 @@
             <br>② <strong>按住色條左右拖曳</strong>可平移進場時間；
             <br>③ <strong>拉動色條左右邊緣</strong>可增減施作天數（或點 <code>D1~D7 (7天)</code> 標籤精準輸入）。</li>
           <li><strong>重要工項紅標提示：</strong>點擊該列 <strong>🔴</strong> 按鈕，即可將關鍵進場工項改以醒目紅寶石金邊色條標示。</li>
-          <li><strong>實際進度比對與匯出：</strong>點擊「📊 增加實際進度列」可展開每日實際進度輸入與累積超前／落後比對，並支援一鍵匯出 Excel CSV 與 S 曲線圖檢視。</li>
+          <li><strong>實際進度比對與匯出：</strong>點擊「📊 增加實際進度列」可展開每日實際進度輸入與累積超前／落後比對，並支援一鍵匯出彩色 Excel (.xlsx，含動態公式與橫式 A3 滿版列印設定) 與 S 曲線圖檢視。</li>
         </ol>
       </div>
       <div class="modal-footer">
@@ -1951,7 +1989,10 @@
       },
 
       escapeCSV(val) {
-        const s = String(val === null || val === undefined ? "" : val);
+        let s = String(val === null || val === undefined ? "" : val);
+        if (/^[=+\-@]/.test(s) && typeof val !== "number") {
+          s = "'" + s;
+        }
         if (/[",\r\n]/.test(s)) {
           return '"' + s.replace(/"/g, '""') + '"';
         }
@@ -2011,6 +2052,626 @@
         return "\uFEFF" + rows.map(r => r.map(c => this.escapeCSV(c)).join(",")).join("\r\n");
       }
     };
+
+    const ExcelXLSXBuilder = {
+      crcTable: null,
+
+      getCrcTable() {
+        if (this.crcTable) return this.crcTable;
+        const tbl = new Uint32Array(256);
+        for (let i = 0; i < 256; i++) {
+          let c = i;
+          for (let k = 0; k < 8; k++) {
+            c = (c & 1) ? (0xEDB88320 ^ (c >>> 1)) : (c >>> 1);
+          }
+          tbl[i] = c >>> 0;
+        }
+        this.crcTable = tbl;
+        return tbl;
+      },
+
+      crc32(bytes) {
+        const tbl = this.getCrcTable();
+        let c = 0xFFFFFFFF;
+        for (let i = 0; i < bytes.length; i++) {
+          c = tbl[(c ^ bytes[i]) & 0xFF] ^ (c >>> 8);
+        }
+        return (c ^ 0xFFFFFFFF) >>> 0;
+      },
+
+      strToUtf8(str) {
+        if (typeof TextEncoder !== "undefined") {
+          return new TextEncoder().encode(str);
+        }
+        const out = [];
+        for (let i = 0; i < str.length; i++) {
+          let cp = str.charCodeAt(i);
+          if (cp < 0x80) out.push(cp);
+          else if (cp < 0x800) out.push(0xC0 | (cp >> 6), 0x80 | (cp & 0x3F));
+          else if (cp < 0xD800 || cp >= 0xE000) out.push(0xE0 | (cp >> 12), 0x80 | ((cp >> 6) & 0x3F), 0x80 | (cp & 0x3F));
+          else {
+            i++;
+            cp = 0x10000 + (((cp & 0x3FF) << 10) | (str.charCodeAt(i) & 0x3FF));
+            out.push(0xF0 | (cp >> 18), 0x80 | ((cp >> 12) & 0x3F), 0x80 | ((cp >> 6) & 0x3F), 0x80 | (cp & 0x3F));
+          }
+        }
+        return new Uint8Array(out);
+      },
+
+      buildZip(files) {
+        const localChunks = [];
+        const centralChunks = [];
+        let offset = 0;
+
+        for (const f of files) {
+          const nameBytes = this.strToUtf8(f.name);
+          const dataBytes = typeof f.content === "string" ? this.strToUtf8(f.content) : f.content;
+          const crc = this.crc32(dataBytes);
+          const size = dataBytes.length;
+
+          const lh = new Uint8Array(30 + nameBytes.length);
+          const lhv = new DataView(lh.buffer);
+          lhv.setUint32(0, 0x04034B50, true);
+          lhv.setUint16(4, 20, true);
+          lhv.setUint16(6, 0x0800, true); // UTF-8 flag
+          lhv.setUint16(8, 0, true);      // Store (no compression)
+          lhv.setUint16(10, 0x4000, true);
+          lhv.setUint16(12, 0x597B, true);
+          lhv.setUint32(14, crc, true);
+          lhv.setUint32(18, size, true);
+          lhv.setUint32(22, size, true);
+          lhv.setUint16(26, nameBytes.length, true);
+          lhv.setUint16(28, 0, true);
+          lh.set(nameBytes, 30);
+
+          localChunks.push(lh, dataBytes);
+
+          const ch = new Uint8Array(46 + nameBytes.length);
+          const chv = new DataView(ch.buffer);
+          chv.setUint32(0, 0x02014B50, true);
+          chv.setUint16(4, 20, true);
+          chv.setUint16(6, 20, true);
+          chv.setUint16(8, 0x0800, true);
+          chv.setUint16(10, 0, true);
+          chv.setUint16(12, 0x4000, true);
+          chv.setUint16(14, 0x597B, true);
+          chv.setUint32(16, crc, true);
+          chv.setUint32(20, size, true);
+          chv.setUint32(24, size, true);
+          chv.setUint16(28, nameBytes.length, true);
+          chv.setUint16(30, 0, true);
+          chv.setUint16(32, 0, true);
+          chv.setUint16(34, 0, true);
+          chv.setUint16(36, 0, true);
+          chv.setUint32(38, 0, true);
+          chv.setUint32(42, offset, true);
+          ch.set(nameBytes, 46);
+
+          centralChunks.push(ch);
+          offset += lh.length + dataBytes.length;
+        }
+
+        let centralSize = 0;
+        for (const c of centralChunks) centralSize += c.length;
+
+        const eocd = new Uint8Array(22);
+        const ev = new DataView(eocd.buffer);
+        ev.setUint32(0, 0x06054B50, true);
+        ev.setUint16(4, 0, true);
+        ev.setUint16(6, 0, true);
+        ev.setUint16(8, files.length, true);
+        ev.setUint16(10, files.length, true);
+        ev.setUint32(12, centralSize, true);
+        ev.setUint32(16, offset, true);
+        ev.setUint16(20, 0, true);
+
+        const totalLen = offset + centralSize + eocd.length;
+        const out = new Uint8Array(totalLen);
+        let pos = 0;
+        for (const chunk of localChunks) { out.set(chunk, pos); pos += chunk.length; }
+        for (const chunk of centralChunks) { out.set(chunk, pos); pos += chunk.length; }
+        out.set(eocd, pos);
+        return out;
+      },
+
+      colLetter(col1Based) {
+        let n = col1Based;
+        let s = "";
+        while (n > 0) {
+          const rem = (n - 1) % 26;
+          s = String.fromCharCode(65 + rem) + s;
+          n = Math.floor((n - 1) / 26);
+        }
+        return s;
+      },
+
+      xmlEsc(val) {
+        return String(val === null || val === undefined ? "" : val)
+          .replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F]/g, "")
+          .replace(/&/g, "&amp;")
+          .replace(/</g, "&lt;")
+          .replace(/>/g, "&gt;")
+          .replace(/"/g, "&quot;")
+          .replace(/'/g, "&apos;");
+      },
+
+      normHex(hex, fallback) {
+        if (typeof hex === "string" && /^#[0-9a-fA-F]{6}$/.test(hex)) {
+          return "FF" + hex.slice(1).toUpperCase();
+        }
+        return fallback || "FF1D4ED8";
+      },
+
+      buildXLSXBytes(rawState) {
+        const state = ScheduleEngine.normalizeState(rawState);
+        const metrics = ScheduleEngine.computeMetrics(state);
+        const td = state.totalDays;
+        const items = state.items;
+        const lastColIdx = 4 + td; // A=項次, B=工項進場排列, C=金額, D=百分比, E..=甘特圖表
+        const lastCol = this.colLetter(lastColIdx);
+
+        // --- Calibrated Windows Excel Editing View + Landscape A3 Top-to-Bottom Full-Bleed Print ---
+        const colW_A = 4.8;
+        const colW_B = 22;
+        const colW_C = 12.5;
+        const colW_D = 9.0;
+        const colW_Day = td <= 30 ? 5.4 : (td <= 55 ? 4.6 : (td <= 90 ? 4.0 : 3.6));
+
+        // Crisp standard Office Excel font sizes for comfortable screen editing
+        const fontTitle = 13;
+        const fontBase = 10;
+        const fontSmall = 8.5;
+
+        // Compact 4-row frozen header (Title + Banner + 月/日 + 星期 = 78pt total, never blocks screen editing)
+        const hTitle = 26;
+        const hHead1 = 18;
+        const hHeadDate = 18;
+        const hHeadWeek = 16;
+        const frozenHeaderH = hTitle + hHead1 + hHeadDate + hHeadWeek;
+
+        // Exact Windows Excel A3 Landscape aspect calibration (measured directly on real Excel A3 print preview):
+        // fullA3HeightPt = totalColChars * 4.16 ensures bottom of table extends flush to the bottom edge of A3 Landscape!
+        const footerRowsCount = state.showActual ? 5 : 3;
+        const itemCount = Math.max(1, items.length);
+        const totalColChars = colW_A + colW_B + colW_C + colW_D + td * colW_Day;
+        const targetTotalH = Math.max(760, totalColChars * 4.16);
+        const bodyFootTargetH = Math.max(560, targetTotalH - frozenHeaderH);
+        const rawItemH = bodyFootTargetH / (itemCount + footerRowsCount * 0.88);
+        const hItem = Math.round(Math.max(24, Math.min(62, rawItemH)) * 10) / 10;
+        const hFoot = Math.round(Math.max(22, Math.min(54, hItem * 0.88)) * 10) / 10;
+
+        // --- Dynamic Style Registry ---
+        const fonts = [];
+        const fontMap = new Map();
+        const addFont = (size, bold, colorArgb) => {
+          const key = `${size}|${bold ? 1 : 0}|${colorArgb}`;
+          if (fontMap.has(key)) return fontMap.get(key);
+          const idx = fonts.length;
+          fonts.push(`<font>${bold ? "<b/>" : ""}<sz val="${size}"/><color rgb="${colorArgb}"/><name val="Microsoft JhengHei"/></font>`);
+          fontMap.set(key, idx);
+          return idx;
+        };
+
+        const fills = [
+          `<fill><patternFill patternType="none"/></fill>`,
+          `<fill><patternFill patternType="gray125"/></fill>`
+        ];
+        const fillMap = new Map();
+        const addFill = (bgArgb) => {
+          if (!bgArgb) return 0;
+          if (fillMap.has(bgArgb)) return fillMap.get(bgArgb);
+          const idx = fills.length;
+          fills.push(`<fill><patternFill patternType="solid"><fgColor rgb="${bgArgb}"/><bgColor indexed="64"/></patternFill></fill>`);
+          fillMap.set(bgArgb, idx);
+          return idx;
+        };
+
+        const borders = [
+          `<border><left/><right/><top/><bottom/><diagonal/></border>`, // 0: none
+          `<border><left style="thin"><color rgb="FFD8D0C2"/></left><right style="thin"><color rgb="FFD8D0C2"/></right><top style="thin"><color rgb="FFD8D0C2"/></top><bottom style="thin"><color rgb="FFD8D0C2"/></bottom><diagonal/></border>`, // 1: standard grid
+          `<border><left style="thin"><color rgb="FF334155"/></left><right style="thin"><color rgb="FF334155"/></right><top style="medium"><color rgb="FFC9A66B"/></top><bottom style="medium"><color rgb="FFC9A66B"/></bottom><diagonal/></border>`, // 2: luxury gold top/bottom
+          `<border><left style="thin"><color rgb="FFFFFFFF"/></left><right style="thin"><color rgb="FFFFFFFF"/></right><top style="thin"><color rgb="FFD8D0C2"/></top><bottom style="thin"><color rgb="FFD8D0C2"/></bottom><diagonal/></border>`, // 3: gantt colored bar
+          `<border><left style="medium"><color rgb="FFC81E2B"/></left><right style="thin"><color rgb="FFFECDD3"/></right><top style="thin"><color rgb="FFFECDD3"/></top><bottom style="thin"><color rgb="FFFECDD3"/></bottom><diagonal/></border>` // 4: important row left ruby accent
+        ];
+
+        const numFmts = [
+          `<numFmt numFmtId="164" formatCode="&quot;$&quot;#,##0"/>`
+        ];
+
+        const xfs = [
+          `<xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0"/>`
+        ];
+        const xfMap = new Map();
+        // Ensure default font 0 exists
+        addFont(fontBase, false, "FF18202C");
+
+        const addStyle = ({ fontId, fillId, borderId, numFmtId = 0, hAlign = "center", vAlign = "center", wrap = false, shrink = false }) => {
+          const key = `${fontId}|${fillId}|${borderId}|${numFmtId}|${hAlign}|${vAlign}|${wrap ? 1 : 0}|${shrink ? 1 : 0}`;
+          if (xfMap.has(key)) return xfMap.get(key);
+          const idx = xfs.length;
+          xfs.push(
+            `<xf numFmtId="${numFmtId}" fontId="${fontId}" fillId="${fillId}" borderId="${borderId}" xfId="0" applyFont="1" applyFill="1" applyBorder="1" applyAlignment="1"${numFmtId ? ' applyNumberFormat="1"' : ""}>` +
+            `<alignment horizontal="${hAlign}" vertical="${vAlign}"${wrap ? ' wrapText="1"' : ""}${shrink ? ' shrinkToFit="1"' : ""}/></xf>`
+          );
+          xfMap.set(key, idx);
+          return idx;
+        };
+
+        // Predefine reusable executive styles
+        const sTitle = addStyle({ fontId: addFont(fontTitle, true, "FFF8F5EE"), fillId: addFill("FF0E141F"), borderId: 2, hAlign: "left", wrap: false });
+        const sHeadDark = addStyle({ fontId: addFont(fontBase, true, "FFF6EEDC"), fillId: addFill("FF172133"), borderId: 2, hAlign: "center", wrap: true });
+        const sHeadGantt = addStyle({ fontId: addFont(fontBase, true, "FFE5C992"), fillId: addFill("FF172133"), borderId: 2, hAlign: "left", wrap: false });
+        const sDayHead = addStyle({ fontId: addFont(fontSmall, true, "FF2C3545"), fillId: addFill("FFF7F4EE"), borderId: 1, hAlign: "center", wrap: false, shrink: true });
+        const sDayHeadWk = addStyle({ fontId: addFont(fontSmall, true, "FF9F1239"), fillId: addFill("FFF9EEEE"), borderId: 1, hAlign: "center", wrap: false, shrink: true });
+        const sWeekHead = addStyle({ fontId: addFont(fontSmall, false, "FF5E6775"), fillId: addFill("FFFCFAF6"), borderId: 1, hAlign: "center", wrap: false, shrink: true });
+        const sWeekHeadWk = addStyle({ fontId: addFont(fontSmall, true, "FFB91C1C"), fillId: addFill("FFF9EEEE"), borderId: 1, hAlign: "center", wrap: false, shrink: true });
+
+        const sIdxEven = addStyle({ fontId: addFont(fontBase, true, "FF8F7A56"), fillId: addFill("FFFFFFFF"), borderId: 1, hAlign: "center" });
+        const sIdxOdd = addStyle({ fontId: addFont(fontBase, true, "FF8F7A56"), fillId: addFill("FFFCFAF6"), borderId: 1, hAlign: "center" });
+        const sIdxImp = addStyle({ fontId: addFont(fontBase, true, "FFC81E2B"), fillId: addFill("FFFFF1F2"), borderId: 4, hAlign: "center" });
+
+        const sNameEven = addStyle({ fontId: addFont(fontBase, true, "FF18202C"), fillId: addFill("FFFFFFFF"), borderId: 1, hAlign: "left", wrap: true });
+        const sNameOdd = addStyle({ fontId: addFont(fontBase, true, "FF18202C"), fillId: addFill("FFFCFAF6"), borderId: 1, hAlign: "left", wrap: true });
+        const sNameImp = addStyle({ fontId: addFont(fontBase, true, "FF991B1B"), fillId: addFill("FFFFF1F2"), borderId: 1, hAlign: "left", wrap: true });
+
+        const sAmtEven = addStyle({ fontId: addFont(fontBase, true, "FF16202E"), fillId: addFill("FFFFFFFF"), borderId: 1, numFmtId: 3, hAlign: "right" });
+        const sAmtOdd = addStyle({ fontId: addFont(fontBase, true, "FF16202E"), fillId: addFill("FFFCFAF6"), borderId: 1, numFmtId: 3, hAlign: "right" });
+        const sAmtImp = addStyle({ fontId: addFont(fontBase, true, "FF991B1B"), fillId: addFill("FFFFF7F8"), borderId: 1, numFmtId: 3, hAlign: "right" });
+
+        const sPctEven = addStyle({ fontId: addFont(fontBase, true, "FF1E3A8A"), fillId: addFill("FFFFFFFF"), borderId: 1, numFmtId: 10, hAlign: "right" });
+        const sPctOdd = addStyle({ fontId: addFont(fontBase, true, "FF1E3A8A"), fillId: addFill("FFFCFAF6"), borderId: 1, numFmtId: 10, hAlign: "right" });
+        const sPctImp = addStyle({ fontId: addFont(fontBase, true, "FF991B1B"), fillId: addFill("FFFFF7F8"), borderId: 1, numFmtId: 10, hAlign: "right" });
+
+        const sEmptyCell = addStyle({ fontId: addFont(fontSmall, false, "FFCBD5E1"), fillId: addFill("FFFFFFFF"), borderId: 1, hAlign: "center" });
+        const sWeekendCell = addStyle({ fontId: addFont(fontSmall, false, "FFCBD5E1"), fillId: addFill("FFFDF7F7"), borderId: 1, hAlign: "center" });
+
+        const sTotalLabel = addStyle({ fontId: addFont(fontBase, true, "FFF6EFE2"), fillId: addFill("FF1A2538"), borderId: 2, hAlign: "left" });
+        const sTotalAmt = addStyle({ fontId: addFont(fontBase, true, "FFF2D79C"), fillId: addFill("FF1A2538"), borderId: 2, numFmtId: 164, hAlign: "right" });
+        const sTotalPct = addStyle({ fontId: addFont(fontBase, true, "FF93C5FD"), fillId: addFill("FF1A2538"), borderId: 2, numFmtId: 10, hAlign: "right" });
+        const sTotalNote = addStyle({ fontId: addFont(fontSmall, true, "FFD9C08C"), fillId: addFill("FF1A2538"), borderId: 2, hAlign: "left" });
+
+        const sPlanDailyLbl = addStyle({ fontId: addFont(fontBase, true, "FF1E40AF"), fillId: addFill("FFF4F7FC"), borderId: 1, hAlign: "left" });
+        const sPlanDailyVal = addStyle({ fontId: addFont(fontSmall, false, "FF1E40AF"), fillId: addFill("FFF4F7FC"), borderId: 1, numFmtId: 10, hAlign: "center", shrink: true });
+        const sPlanCumLbl = addStyle({ fontId: addFont(fontBase, true, "FF172554"), fillId: addFill("FFE8F0FC"), borderId: 1, hAlign: "left" });
+        const sPlanCumVal = addStyle({ fontId: addFont(fontSmall, true, "FF172554"), fillId: addFill("FFE8F0FC"), borderId: 1, numFmtId: 10, hAlign: "center", shrink: true });
+
+        const sActDailyLbl = addStyle({ fontId: addFont(fontBase, true, "FF065F46"), fillId: addFill("FFF0FDF4"), borderId: 1, hAlign: "left" });
+        const sActDailyVal = addStyle({ fontId: addFont(fontSmall, false, "FF065F46"), fillId: addFill("FFF0FDF4"), borderId: 1, numFmtId: 10, hAlign: "center", shrink: true });
+        const sActCumLbl = addStyle({ fontId: addFont(fontBase, true, "FF064E3B"), fillId: addFill("FFDCFCE7"), borderId: 1, hAlign: "left" });
+        const sActCumVal = addStyle({ fontId: addFont(fontSmall, true, "FF064E3B"), fillId: addFill("FFDCFCE7"), borderId: 1, numFmtId: 10, hAlign: "center", shrink: true });
+
+        // Dynamic Gantt bar style per color
+        const barStyleCache = new Map();
+        const getBarStyle = (hexColor, isImportant) => {
+          const argb = isImportant ? "FFC81E2B" : this.normHex(hexColor, "FF1D4ED8");
+          const key = argb + (isImportant ? "_IMP" : "");
+          if (barStyleCache.has(key)) return barStyleCache.get(key);
+          const st = addStyle({
+            fontId: addFont(fontSmall, true, "FFFFFFFF"),
+            fillId: addFill(argb),
+            borderId: 3,
+            hAlign: "center"
+          });
+          barStyleCache.set(key, st);
+          return st;
+        };
+
+        // --- Build Worksheet Rows ---
+        const merges = [];
+        const rowsXml = [];
+        const dayInfos = [];
+        for (let d = 0; d < td; d++) dayInfos.push(ScheduleEngine.getDayInfo(state.startDate, d));
+
+        const strCell = (ref, styleIdx, text) =>
+          `<c r="${ref}" s="${styleIdx}" t="inlineStr"><is><t xml:space="preserve">${this.xmlEsc(text)}</t></is></c>`;
+        const numCell = (ref, styleIdx, num) =>
+          `<c r="${ref}" s="${styleIdx}"><v>${num}</v></c>`;
+        const blankCell = (ref, styleIdx) =>
+          `<c r="${ref}" s="${styleIdx}"/>`;
+        const formulaCell = (ref, styleIdx, formula, cachedNum) =>
+          `<c r="${ref}" s="${styleIdx}"><f>${this.xmlEsc(formula)}</f><v>${Number.isFinite(cachedNum) ? cachedNum : 0}</v></c>`;
+
+        // Row 1: Title Banner (split cleanly at freeze boundary A1:D1 | E1:lastCol1 so Excel freeze pane never clips text)
+        const sInfo = dayInfos[0];
+        const eInfo = dayInfos[td - 1];
+        const sTitleSub = addStyle({ fontId: addFont(fontBase, true, "FFE5C992"), fillId: addFill("FF0E141F"), borderId: 2, hAlign: "left", wrap: false });
+        const rangeBannerText = `排程區間：${sInfo.dateStr} (${sInfo.weekday}) ～ ${eInfo.dateStr} (${eInfo.weekday})　｜　總工期：${td} 天`;
+        let r1Cells =
+          strCell("A1", sTitle, state.projectTitle) +
+          blankCell("B1", sTitle) +
+          blankCell("C1", sTitle) +
+          blankCell("D1", sTitle) +
+          strCell("E1", sTitleSub, rangeBannerText);
+        for (let c = 6; c <= lastColIdx; c++) r1Cells += blankCell(this.colLetter(c) + "1", sTitleSub);
+        rowsXml.push(`<row r="1" ht="${hTitle}" customHeight="1">${r1Cells}</row>`);
+        merges.push("A1:D1");
+        if (td > 1) merges.push(`E1:${lastCol}1`);
+
+        // Row 2: Main Headers (merged A2:A4, B2:B4, C2:C4, D2:D4)
+        let r2Cells =
+          strCell("A2", sHeadDark, "項次") +
+          strCell("B2", sHeadDark, "工項進場排列") +
+          strCell("C2", sHeadDark, "金額 (NT$)") +
+          strCell("D2", sHeadDark, "百分比") +
+          strCell("E2", sHeadGantt, `甘特圖表（共 ${td} 天）`);
+        for (let c = 6; c <= lastColIdx; c++) r2Cells += blankCell(this.colLetter(c) + "2", sHeadGantt);
+        rowsXml.push(`<row r="2" ht="${hHead1}" customHeight="1">${r2Cells}</row>`);
+        merges.push("A2:A4", "B2:B4", "C2:C4", "D2:D4");
+        if (td > 1) merges.push(`E2:${lastCol}2`);
+
+        // Row 3: Month/Day Row (月/日獨立一格，絕不重疊)
+        let r3Cells =
+          blankCell("A3", sHeadDark) +
+          blankCell("B3", sHeadDark) +
+          blankCell("C3", sHeadDark) +
+          blankCell("D3", sHeadDark);
+        for (let d = 0; d < td; d++) {
+          const info = dayInfos[d];
+          const col = this.colLetter(5 + d);
+          r3Cells += strCell(col + "3", info.isWeekend ? sDayHeadWk : sDayHead, info.shortDate);
+        }
+        rowsXml.push(`<row r="3" ht="${hHeadDate}" customHeight="1">${r3Cells}</row>`);
+
+        // Row 4: Weekday Row (星期獨立一格)
+        let r4Cells =
+          blankCell("A4", sHeadDark) +
+          blankCell("B4", sHeadDark) +
+          blankCell("C4", sHeadDark) +
+          blankCell("D4", sHeadDark);
+        for (let d = 0; d < td; d++) {
+          const info = dayInfos[d];
+          const col = this.colLetter(5 + d);
+          r4Cells += strCell(col + "4", info.isWeekend ? sWeekHeadWk : sWeekHead, info.weekday);
+        }
+        rowsXml.push(`<row r="4" ht="${hHeadWeek}" customHeight="1">${r4Cells}</row>`);
+
+        // Item Rows: 5 .. (4 + items.length)
+        const firstItemRow = 5;
+        const lastItemRow = items.length > 0 ? (4 + items.length) : 4;
+        const totalRow = items.length > 0 ? (lastItemRow + 1) : 5;
+
+        // Track active rows per day for exact live formula in 每日預訂進度百分比
+        const activeByDay = Array.from({ length: td }, () => []);
+
+        items.forEach((it, idx) => {
+          const r = firstItemRow + idx;
+          const isEven = idx % 2 === 0;
+          const sIdx = it.isImportant ? sIdxImp : (isEven ? sIdxEven : sIdxOdd);
+          const sName = it.isImportant ? sNameImp : (isEven ? sNameEven : sNameOdd);
+          const sAmt = it.isImportant ? sAmtImp : (isEven ? sAmtEven : sAmtOdd);
+          const sPct = it.isImportant ? sPctImp : (isEven ? sPctEven : sPctOdd);
+          const sBar = getBarStyle(it.color, it.isImportant);
+
+          const displayName = it.isImportant ? `★ ${it.name} [重要]` : it.name;
+          const hasAmt = it.amount !== null && it.amount > 0;
+          const exactWeightDec = metrics.totalAmount > 0 && hasAmt ? (it.amount / metrics.totalAmount) : 0;
+          const pctFormula = `IF($C$${totalRow}>0,IF(ISNUMBER(C${r}),C${r}/$C$${totalRow},0),0)`;
+
+          let rowCells =
+            numCell("A" + r, sIdx, idx + 1) +
+            strCell("B" + r, sName, displayName) +
+            (hasAmt ? numCell("C" + r, sAmt, it.amount) : blankCell("C" + r, sAmt)) +
+            formulaCell("D" + r, sPct, pctFormula, exactWeightDec);
+
+          for (let d = 1; d <= td; d++) {
+            const col = this.colLetter(4 + d);
+            const active = d >= it.startDay && d < it.startDay + it.duration;
+            if (active) {
+              activeByDay[d - 1].push({ row: r, duration: it.duration });
+              const label = (d === it.startDay) ? (it.isImportant ? "★" : "■") : "";
+              rowCells += label ? strCell(col + r, sBar, label) : blankCell(col + r, sBar);
+            } else {
+              rowCells += blankCell(col + r, dayInfos[d - 1].isWeekend ? sWeekendCell : sEmptyCell);
+            }
+          }
+          rowsXml.push(`<row r="${r}" ht="${hItem}" customHeight="1">${rowCells}</row>`);
+        });
+
+        // Total Row
+        let totalCells =
+          strCell("A" + totalRow, sTotalLabel, `工程總計（共 ${items.length} 項）`) +
+          blankCell("B" + totalRow, sTotalLabel);
+        if (items.length > 0) {
+          totalCells +=
+            formulaCell("C" + totalRow, sTotalAmt, `SUM(C${firstItemRow}:C${lastItemRow})`, metrics.totalAmount) +
+            formulaCell("D" + totalRow, sTotalPct, `SUM(D${firstItemRow}:D${lastItemRow})`, metrics.totalAmount > 0 ? 1 : 0);
+        } else {
+          totalCells +=
+            numCell("C" + totalRow, sTotalAmt, 0) +
+            numCell("D" + totalRow, sTotalPct, 0);
+        }
+        totalCells += strCell("E" + totalRow, sTotalNote, `重要紅標工項：${metrics.importantCount} 項　｜　每日預訂進度與累積進度皆為動態 Excel 公式（修改金額自動重算）`);
+        for (let c = 6; c <= lastColIdx; c++) totalCells += blankCell(this.colLetter(c) + totalRow, sTotalNote);
+        rowsXml.push(`<row r="${totalRow}" ht="${hFoot}" customHeight="1">${totalCells}</row>`);
+        merges.push(`A${totalRow}:B${totalRow}`);
+        if (td > 1) merges.push(`E${totalRow}:${lastCol}${totalRow}`);
+
+        // Daily Planned Progress % Row (LIVE EXCEL FORMULAS!)
+        const planDailyRow = totalRow + 1;
+        let pdCells =
+          strCell("A" + planDailyRow, sPlanDailyLbl, "每日預訂進度百分比 (%)") +
+          blankCell("B" + planDailyRow, sPlanDailyLbl) +
+          blankCell("C" + planDailyRow, sPlanDailyLbl) +
+          blankCell("D" + planDailyRow, sPlanDailyLbl);
+        for (let d = 0; d < td; d++) {
+          const col = this.colLetter(5 + d);
+          const actList = activeByDay[d];
+          const cached = metrics.dailyPlanned[d] / 100;
+          if (actList.length > 0) {
+            const expr = actList.map(x => `D${x.row}/${x.duration}`).join("+");
+            pdCells += formulaCell(col + planDailyRow, sPlanDailyVal, expr, cached);
+          } else {
+            pdCells += numCell(col + planDailyRow, sPlanDailyVal, 0);
+          }
+        }
+        rowsXml.push(`<row r="${planDailyRow}" ht="${hFoot}" customHeight="1">${pdCells}</row>`);
+        merges.push(`A${planDailyRow}:D${planDailyRow}`);
+
+        // Cumulative Planned Progress % Row (LIVE EXCEL FORMULAS!)
+        const planCumRow = totalRow + 2;
+        let pcCells =
+          strCell("A" + planCumRow, sPlanCumLbl, "每日累積預訂進度百分比 (%)") +
+          blankCell("B" + planCumRow, sPlanCumLbl) +
+          blankCell("C" + planCumRow, sPlanCumLbl) +
+          blankCell("D" + planCumRow, sPlanCumLbl);
+        for (let d = 0; d < td; d++) {
+          const col = this.colLetter(5 + d);
+          const cached = metrics.cumPlanned[d] / 100;
+          const formula = d === 0
+            ? `${col}${planDailyRow}`
+            : `${this.colLetter(4 + d)}${planCumRow}+${col}${planDailyRow}`;
+          pcCells += formulaCell(col + planCumRow, sPlanCumVal, formula, cached);
+        }
+        rowsXml.push(`<row r="${planCumRow}" ht="${hFoot}" customHeight="1">${pcCells}</row>`);
+        merges.push(`A${planCumRow}:D${planCumRow}`);
+
+        let lastRow = planCumRow;
+
+        // Optional Actual Progress Rows (LIVE EXCEL FORMULAS!)
+        if (state.showActual) {
+          const actDailyRow = totalRow + 3;
+          let adCells =
+            strCell("A" + actDailyRow, sActDailyLbl, "每日實際進度百分比 (%)") +
+            blankCell("B" + actDailyRow, sActDailyLbl) +
+            blankCell("C" + actDailyRow, sActDailyLbl) +
+            blankCell("D" + actDailyRow, sActDailyLbl);
+          for (let d = 0; d < td; d++) {
+            const col = this.colLetter(5 + d);
+            const v = metrics.dailyActual[d];
+            adCells += v === null
+              ? blankCell(col + actDailyRow, sActDailyVal)
+              : numCell(col + actDailyRow, sActDailyVal, v / 100);
+          }
+          rowsXml.push(`<row r="${actDailyRow}" ht="${hFoot}" customHeight="1">${adCells}</row>`);
+          merges.push(`A${actDailyRow}:D${actDailyRow}`);
+
+          const actCumRow = totalRow + 4;
+          let acCells =
+            strCell("A" + actCumRow, sActCumLbl, "每日累積實際進度百分比 (%)") +
+            blankCell("B" + actCumRow, sActCumLbl) +
+            blankCell("C" + actCumRow, sActCumLbl) +
+            blankCell("D" + actCumRow, sActCumLbl);
+          for (let d = 0; d < td; d++) {
+            const col = this.colLetter(5 + d);
+            const cached = metrics.cumActual[d] / 100;
+            const formula = d === 0
+              ? `IF(ISNUMBER(${col}${actDailyRow}),${col}${actDailyRow},0)`
+              : `${this.colLetter(4 + d)}${actCumRow}+IF(ISNUMBER(${col}${actDailyRow}),${col}${actDailyRow},0)`;
+            acCells += formulaCell(col + actCumRow, sActCumVal, formula, cached);
+          }
+          rowsXml.push(`<row r="${actCumRow}" ht="${hFoot}" customHeight="1">${acCells}</row>`);
+          merges.push(`A${actCumRow}:D${actCumRow}`);
+          lastRow = actCumRow;
+        }
+
+        // Columns XML
+        let colsXml =
+          `<col min="1" max="1" width="${colW_A}" customWidth="1"/>` +
+          `<col min="2" max="2" width="${colW_B}" customWidth="1"/>` +
+          `<col min="3" max="3" width="${colW_C}" customWidth="1"/>` +
+          `<col min="4" max="4" width="${colW_D}" customWidth="1"/>` +
+          `<col min="5" max="${lastColIdx}" width="${colW_Day}" customWidth="1"/>`;
+
+        const mergeXml = merges.length > 0
+          ? `<mergeCells count="${merges.length}">${merges.map(m => `<mergeCell ref="${m}"/>`).join("")}</mergeCells>`
+          : "";
+
+        const sheetXml =
+          `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>` +
+          `<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">` +
+          `<sheetPr><outlinePr summaryBelow="1" summaryRight="1"/><pageSetUpPr fitToPage="1"/></sheetPr>` +
+          `<dimension ref="A1:${lastCol}${lastRow}"/>` +
+          `<sheetViews><sheetView tabSelected="1" zoomScale="85" workbookViewId="0">` +
+          `<pane xSplit="4" ySplit="4" topLeftCell="E5" activePane="bottomRight" state="frozen"/>` +
+          `<selection pane="topRight"/><selection pane="bottomLeft"/><selection pane="bottomRight" activeCell="E5" sqref="E5"/>` +
+          `</sheetView></sheetViews>` +
+          `<sheetFormatPr baseColWidth="8" defaultRowHeight="${hItem}"/>` +
+          `<cols>${colsXml}</cols>` +
+          `<sheetData>${rowsXml.join("")}</sheetData>` +
+          `${mergeXml}` +
+          `<printOptions horizontalCentered="1" verticalCentered="0"/>` +
+          `<pageMargins left="0.2" right="0.2" top="0.2" bottom="0.2" header="0.1" footer="0.1"/>` +
+          `<pageSetup paperSize="8" orientation="landscape" fitToWidth="1" fitToHeight="1"/>` +
+          `</worksheet>`;
+
+        const stylesXml =
+          `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>` +
+          `<styleSheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">` +
+          `<numFmts count="${numFmts.length}">${numFmts.join("")}</numFmts>` +
+          `<fonts count="${fonts.length}">${fonts.join("")}</fonts>` +
+          `<fills count="${fills.length}">${fills.join("")}</fills>` +
+          `<borders count="${borders.length}">${borders.join("")}</borders>` +
+          `<cellStyleXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0"/></cellStyleXfs>` +
+          `<cellXfs count="${xfs.length}">${xfs.join("")}</cellXfs>` +
+          `<cellStyles count="1"><cellStyle name="Normal" xfId="0" builtinId="0"/></cellStyles>` +
+          `<tableStyles count="0" defaultTableStyle="TableStyleMedium9" defaultPivotStyle="PivotStyleLight16"/>` +
+          `</styleSheet>`;
+
+        const workbookXml =
+          `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>` +
+          `<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">` +
+          `<bookViews><workbookView xWindow="0" yWindow="0" windowWidth="24000" windowHeight="14000" activeTab="0"/></bookViews>` +
+          `<sheets><sheet name="工期表" sheetId="1" state="visible" r:id="rId1"/></sheets>` +
+          `<definedNames><definedName name="_xlnm.Print_Area" localSheetId="0">'工期表'!$A$1:$${lastCol}$${lastRow}</definedName></definedNames>` +
+          `<calcPr calcId="191029" fullCalcOnLoad="1"/>` +
+          `</workbook>`;
+
+        const workbookRelsXml =
+          `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>` +
+          `<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">` +
+          `<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/>` +
+          `<Relationship Id="rId2" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/>` +
+          `</Relationships>`;
+
+        const nowIso = new Date().toISOString().replace(/\.\d{3}Z$/, "Z");
+        const coreXml =
+          `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>` +
+          `<cp:coreProperties xmlns:cp="http://schemas.openxmlformats.org/package/2006/metadata/core-properties" xmlns:dc="http://purl.org/dc/elements/1.1/" xmlns:dcterms="http://purl.org/dc/terms/" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">` +
+          `<dc:title>${this.xmlEsc(state.projectTitle)}</dc:title>` +
+          `<dc:creator>Atelier Gantt Pro</dc:creator>` +
+          `<dcterms:created xsi:type="dcterms:W3CDTF">${nowIso}</dcterms:created>` +
+          `<dcterms:modified xsi:type="dcterms:W3CDTF">${nowIso}</dcterms:modified>` +
+          `</cp:coreProperties>`;
+
+        const appXml =
+          `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>` +
+          `<Properties xmlns="http://schemas.openxmlformats.org/officeDocument/2006/extended-properties">` +
+          `<Application>Microsoft Excel</Application>` +
+          `</Properties>`;
+
+        const rootRelsXml =
+          `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>` +
+          `<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">` +
+          `<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/>` +
+          `<Relationship Id="rId2" Type="http://schemas.openxmlformats.org/package/2006/relationships/metadata/core-properties" Target="docProps/core.xml"/>` +
+          `<Relationship Id="rId3" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/extended-properties" Target="docProps/app.xml"/>` +
+          `</Relationships>`;
+
+        const contentTypesXml =
+          `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>` +
+          `<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">` +
+          `<Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>` +
+          `<Default Extension="xml" ContentType="application/xml"/>` +
+          `<Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/>` +
+          `<Override PartName="/xl/worksheets/sheet1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>` +
+          `<Override PartName="/xl/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml"/>` +
+          `<Override PartName="/docProps/core.xml" ContentType="application/vnd.openxmlformats-package.core-properties+xml"/>` +
+          `<Override PartName="/docProps/app.xml" ContentType="application/vnd.openxmlformats-officedocument.extended-properties+xml"/>` +
+          `</Types>`;
+
+        return this.buildZip([
+          { name: "[Content_Types].xml", content: contentTypesXml },
+          { name: "_rels/.rels", content: rootRelsXml },
+          { name: "docProps/core.xml", content: coreXml },
+          { name: "docProps/app.xml", content: appXml },
+          { name: "xl/workbook.xml", content: workbookXml },
+          { name: "xl/_rels/workbook.xml.rels", content: workbookRelsXml },
+          { name: "xl/styles.xml", content: stylesXml },
+          { name: "xl/worksheets/sheet1.xml", content: sheetXml }
+        ]);
+      }
+    };
+
     // === ENGINE_END ===
 
     // === UI CONTROLLER ===
@@ -2639,17 +3300,22 @@
       });
 
       document.getElementById("btnExportCSV").addEventListener("click", () => {
-        const csv = ScheduleEngine.buildCSV(appState);
-        const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
-        const url = URL.createObjectURL(blob);
-        const a = document.createElement("a");
-        a.href = url;
-        a.download = `${appState.projectTitle || "工期表"}.csv`;
-        document.body.appendChild(a);
-        a.click();
-        a.remove();
-        setTimeout(() => URL.revokeObjectURL(url), 1000);
-        showToast("已匯出 Excel 相容 CSV 工期表");
+        try {
+          const bytes = ExcelXLSXBuilder.buildXLSXBytes(appState);
+          const blob = new Blob([bytes], { type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" });
+          const url = URL.createObjectURL(blob);
+          const a = document.createElement("a");
+          a.href = url;
+          const safeTitle = (appState.projectTitle || "工期表").replace(/[\\/:*?"<>|]/g, "_");
+          a.download = `${safeTitle}.xlsx`;
+          document.body.appendChild(a);
+          a.click();
+          a.remove();
+          setTimeout(() => URL.revokeObjectURL(url), 1500);
+          showToast("已匯出彩色 Excel (.xlsx) — 含自動公式與橫式 A3 滿版列印設定");
+        } catch (err) {
+          showToast("匯出 Excel 失敗，請再試一次");
+        }
       });
 
       document.getElementById("btnSaveJSON").addEventListener("click", () => {
@@ -2942,6 +3608,32 @@
         }
       });
     }
+
+    // Close modals on Escape key or backdrop click + redraw S-Curve on resize
+    document.addEventListener("keydown", (e) => {
+      if (e.key === "Escape") {
+        ["catalogModal", "editItemModal", "scurveModal", "guideModal"].forEach(id => {
+          const el = document.getElementById(id);
+          if (el) el.classList.remove("open");
+        });
+        editingItemId = null;
+      }
+    });
+    ["catalogModal", "editItemModal", "scurveModal", "guideModal"].forEach(id => {
+      const el = document.getElementById(id);
+      if (el) {
+        el.addEventListener("click", (e) => {
+          if (e.target === el) {
+            el.classList.remove("open");
+            if (id === "editItemModal") editingItemId = null;
+          }
+        });
+      }
+    });
+    window.addEventListener("resize", () => {
+      const sc = document.getElementById("scurveModal");
+      if (sc && sc.classList.contains("open")) renderSCurve();
+    });
 
     renderCatalogGrid();
     appState = loadInitialState();
